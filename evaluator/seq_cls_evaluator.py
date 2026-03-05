@@ -368,7 +368,7 @@ class SeqClsTrainer(BaseTrainer):
         target_dataloader = self.eval_dataloader
         if info == "Train_set":
             target_dataloader = self.train_dataloader
-        if info == "Extra_set" and self.extra_dataloader is not None:
+        if info in ["Extra_set", "Test_set", "Independent_test_set"] and self.extra_dataloader is not None:
             target_dataloader = self.extra_dataloader
 
         with tqdm(total=len(target_dataloader.dataset), mininterval=5) as pbar:
@@ -407,6 +407,7 @@ class SeqClsTrainer(BaseTrainer):
 
         time_ed = time.time() - time_st
         print(log.format(**results), "; Time: {:.4f}s".format(time_ed))
+        return metrics_dataset
 
     def extract_embedding(self, epoch):
         self.model.eval()
