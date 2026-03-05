@@ -173,5 +173,5 @@ if __name__ == '__main__':
             train_data=fold_train,
             eval_data=fold_val,
             extra_eval_data=dataset_test,
-            extra_eval_name="Test_set",
+            extra_eval_name="Independent_test_set",
         )

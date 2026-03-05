@@ -166,7 +166,7 @@ class M6APredEvaluator():
         )
         print("Trainable parameters: {}".format(trainable_params))
 
-    def run(self, args, train_data, eval_data, extra_eval_data=None, extra_eval_name="Extra_set"):
+    def run(self, args, train_data, eval_data, extra_eval_data=None, extra_eval_name="Independent_test_set"):
         self.buildTrainer(args)
         args.device = self.device
         self.seq_cls_trainer = M6APredTrainer(
@@ -191,7 +191,7 @@ class M6APredEvaluator():
             self.seq_cls_trainer.train(i_epoch)
             # record performance on train set to check overfitting
             self.seq_cls_trainer.eval(i_epoch, info="Train_set")
-            self.seq_cls_trainer.eval(i_epoch)
+            self.seq_cls_trainer.eval(i_epoch, info="Fold_val_set")
             if extra_eval_data is not None or args.extra_eval:
                 self.seq_cls_trainer.eval(i_epoch, info=extra_eval_name)
             if (i_epoch == 0) or ((i_epoch+1) % 5 == 0):
