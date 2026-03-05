@@ -45,11 +45,20 @@ def _format_metric(v):
     return str(v)
 
 
-def print_metrics_table(title, rows, metric_names):
-    print(f"\n===== {title} =====")
+def compute_mean_metrics(rows, metric_names):
+    mean_values = {}
+    for metric in metric_names:
+        vals = [r[metric] for r in rows if isinstance(r.get(metric), (int, float))]
+        if vals:
+            mean_values[metric] = sum(vals) / len(vals)
+    return mean_values
+
+
+def build_metrics_table_lines(title, rows, metric_names, include_mean=True):
+    lines = [f"\n===== {title} ====="]
     if not rows:
-        print("No results.")
-        return
+        lines.append("No results.")
+        return lines, {}
 
     headers = ["fold"] + metric_names
     data = []
@@ -59,32 +68,40 @@ def print_metrics_table(title, rows, metric_names):
             line.append(_format_metric(row.get(metric, "-")))
         data.append(line)
 
+    mean_values = compute_mean_metrics(rows, metric_names)
+    if include_mean:
+        mean_row = ["mean"]
+        for metric in metric_names:
+            mean_row.append(_format_metric(mean_values.get(metric, "-")))
+        data.append(mean_row)
+
     widths = [max(len(headers[i]), max(len(r[i]) for r in data)) for i in range(len(headers))]
-    print(" | ".join(headers[i].ljust(widths[i]) for i in range(len(headers))))
-    print("-+-".join("-" * widths[i] for i in range(len(headers))))
+    lines.append(" | ".join(headers[i].ljust(widths[i]) for i in range(len(headers))))
+    lines.append("-+-".join("-" * widths[i] for i in range(len(headers))))
     for row in data:
-        print(" | ".join(row[i].ljust(widths[i]) for i in range(len(headers))))
+        lines.append(" | ".join(row[i].ljust(widths[i]) for i in range(len(headers))))
+    return lines, mean_values
 
 
-def print_mean_metrics(title, rows, metric_names):
-    print(f"\n----- {title} -----")
-    if not rows:
-        print("No results.")
-        return
+def print_metrics_table(title, rows, metric_names, include_mean=True):
+    lines, mean_values = build_metrics_table_lines(title, rows, metric_names, include_mean=include_mean)
+    for line in lines:
+        print(line)
+    return lines, mean_values
 
-    mean_values = {}
-    for metric in metric_names:
-        vals = [r[metric] for r in rows if isinstance(r.get(metric), (int, float))]
-        if vals:
-            mean_values[metric] = sum(vals) / len(vals)
 
-    if not mean_values:
-        print("No numeric metrics to average.")
-        return
+def save_experiment_log(log_path, args, kfold_lines, indep_lines):
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    with open(log_path, "w", encoding="utf-8") as f:
+        f.write("===== Experiment Args =====\n")
+        for key in sorted(vars(args).keys()):
+            f.write(f"{key}: {getattr(args, key)}\n")
 
-    for metric in metric_names:
-        if metric in mean_values:
-            print(f"{metric}: {mean_values[metric]:.4f}")
+        f.write("\n===== Results =====\n")
+        for line in kfold_lines:
+            f.write(line + "\n")
+        for line in indep_lines:
+            f.write(line + "\n")
 
 
 def build_evaluator(args):
@@ -241,8 +258,19 @@ if __name__ == '__main__':
 
         print(f"[FoldSummary] fold={fold_id}, best_epoch={fold_result['best_epoch']}, best_pr_auc={val_row.get('pr_auc', 'NA')}")
 
-    print_metrics_table("K-fold best validation metrics (selected by pr_auc)", kfold_rows, metric_names)
-    print_mean_metrics("K-fold mean validation metrics", kfold_rows, metric_names)
+    kfold_lines, _ = print_metrics_table(
+        "K-fold best validation metrics (selected by pr_auc)",
+        kfold_rows,
+        metric_names,
+        include_mean=True,
+    )
+    indep_lines, _ = print_metrics_table(
+        "Independent test metrics on each fold's best model",
+        independent_rows,
+        metric_names,
+        include_mean=True,
+    )
 
-    print_metrics_table("Independent test metrics on each fold's best model", independent_rows, metric_names)
-    print_mean_metrics("Independent test mean metrics", independent_rows, metric_names)
+    log_path = os.path.join(args.output_dir, "experiment_summary.log")
+    save_experiment_log(log_path, args, kfold_lines, indep_lines)
+    print(f"[Log] Saved experiment summary to: {log_path}")
