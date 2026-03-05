@@ -191,8 +191,10 @@ class M6APredEvaluator():
             self.seq_cls_trainer.train(i_epoch)
             # record performance on train set to check overfitting
             self.seq_cls_trainer.eval(i_epoch, info="Train_set")
+            print("[KFold] Running fold validation evaluation (Fold_val_set)")
             self.seq_cls_trainer.eval(i_epoch, info="Fold_val_set")
             if extra_eval_data is not None or args.extra_eval:
+                print(f"[IndependentTest] Running independent test evaluation ({extra_eval_name})")
                 self.seq_cls_trainer.eval(i_epoch, info=extra_eval_name)
             if (i_epoch == 0) or ((i_epoch+1) % 5 == 0):
                 try:
