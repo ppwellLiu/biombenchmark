@@ -179,30 +179,67 @@ class M6APredEvaluator():
             optimizer=self._optimizer,
             compute_metrics=self._metric,
         )
-        ## add extra evaluation
+
+        has_independent_eval = False
         if extra_eval_data is not None:
             self.seq_cls_trainer.extra_dataloader = self.seq_cls_trainer._get_dataloader(extra_eval_data)
+            has_independent_eval = True
         elif args.extra_eval:
             extra_data = m6a_dataset.M6ADataset(fasta_dir=args.extra_eval)
             self.seq_cls_trainer.extra_dataloader = self.seq_cls_trainer._get_dataloader(extra_data)
-        ##
+            has_independent_eval = True
+
+        best_pr_auc = float("-inf")
+        best_epoch = -1
+        best_val_metrics = None
+        early_stop_counter = 0
+
+        model_dir = f'{args.output_dir}/{args.method}'
+        os.makedirs(model_dir, exist_ok=True)
+        best_model_path = os.path.join(model_dir, 'best_model_state.pt')
+
         for i_epoch in range(args.num_train_epochs):
             print("Epoch: {}".format(i_epoch))
             self.seq_cls_trainer.train(i_epoch)
-            # record performance on train set to check overfitting
             self.seq_cls_trainer.eval(i_epoch, info="Train_set")
+
             print("[KFold] Running fold validation evaluation (Fold_val_set)")
-            self.seq_cls_trainer.eval(i_epoch, info="Fold_val_set")
-            if extra_eval_data is not None or args.extra_eval:
-                print(f"[IndependentTest] Running independent test evaluation ({extra_eval_name})")
-                self.seq_cls_trainer.eval(i_epoch, info=extra_eval_name)
-            if (i_epoch == 0) or ((i_epoch+1) % 5 == 0):
-                try:
-                    self.seq_cls_trainer.save_model(
-                        f'{args.output_dir}/{args.method}', i_epoch)
-                except Exception as e:
-                    print(e)
-                    print("Failed to save model.")
+            fold_val_metrics = self.seq_cls_trainer.eval(i_epoch, info="Fold_val_set")
+            fold_pr_auc = fold_val_metrics.get("pr_auc", float("-inf"))
+
+            if fold_pr_auc > best_pr_auc:
+                best_pr_auc = fold_pr_auc
+                best_epoch = i_epoch
+                best_val_metrics = dict(fold_val_metrics)
+                early_stop_counter = 0
+                torch.save(self.model.state_dict(), best_model_path)
+                print(f"[Checkpoint] Saved best fold model at epoch {i_epoch} with pr_auc={fold_pr_auc:.4f}")
+            else:
+                early_stop_counter += 1
+                print(f"[EarlyStop] No pr_auc improvement for {early_stop_counter} epoch(s)")
+
+            if early_stop_counter >= args.early_stop_patience:
+                print(f"[EarlyStop] Stop training at epoch {i_epoch}. Best epoch: {best_epoch}, best pr_auc={best_pr_auc:.4f}")
+                break
+
+        if best_epoch == -1:
+            best_epoch = 0
+            best_val_metrics = {}
+            torch.save(self.model.state_dict(), best_model_path)
+
+        self.model.load_state_dict(torch.load(best_model_path, map_location=self.device))
+        print(f"[Checkpoint] Loaded best fold model from epoch {best_epoch} for independent evaluation")
+
+        independent_test_metrics = None
+        if has_independent_eval:
+            print(f"[IndependentTest] Running independent test evaluation ({extra_eval_name}) on best fold model")
+            independent_test_metrics = self.seq_cls_trainer.eval(best_epoch, info=extra_eval_name)
+
+        return {
+            "best_epoch": best_epoch,
+            "best_val_metrics": best_val_metrics,
+            "independent_test_metrics": independent_test_metrics,
+        }
 
 
 #### Evaluator for models ####

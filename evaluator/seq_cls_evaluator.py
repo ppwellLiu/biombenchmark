@@ -407,6 +407,7 @@ class SeqClsTrainer(BaseTrainer):
 
         time_ed = time.time() - time_st
         print(log.format(**results), "; Time: {:.4f}s".format(time_ed))
+        return metrics_dataset
 
     def extract_embedding(self, epoch):
         self.model.eval()

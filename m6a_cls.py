@@ -39,6 +39,54 @@ def str2list(v):
             "Str value seperated by ', ' expected.")
 
 
+def _format_metric(v):
+    if isinstance(v, (int, float)):
+        return f"{v:.4f}"
+    return str(v)
+
+
+def print_metrics_table(title, rows, metric_names):
+    print(f"\n===== {title} =====")
+    if not rows:
+        print("No results.")
+        return
+
+    headers = ["fold"] + metric_names
+    data = []
+    for row in rows:
+        line = [str(row["fold"])]
+        for metric in metric_names:
+            line.append(_format_metric(row.get(metric, "-")))
+        data.append(line)
+
+    widths = [max(len(headers[i]), max(len(r[i]) for r in data)) for i in range(len(headers))]
+    print(" | ".join(headers[i].ljust(widths[i]) for i in range(len(headers))))
+    print("-+-".join("-" * widths[i] for i in range(len(headers))))
+    for row in data:
+        print(" | ".join(row[i].ljust(widths[i]) for i in range(len(headers))))
+
+
+def print_mean_metrics(title, rows, metric_names):
+    print(f"\n----- {title} -----")
+    if not rows:
+        print("No results.")
+        return
+
+    mean_values = {}
+    for metric in metric_names:
+        vals = [r[metric] for r in rows if isinstance(r.get(metric), (int, float))]
+        if vals:
+            mean_values[metric] = sum(vals) / len(vals)
+
+    if not mean_values:
+        print("No numeric metrics to average.")
+        return
+
+    for metric in metric_names:
+        if metric in mean_values:
+            print(f"{metric}: {mean_values[metric]:.4f}")
+
+
 def build_evaluator(args):
     if args.method == 'RNAFM':
         args.replace_T = True
@@ -141,6 +189,7 @@ if __name__ == '__main__':
                         default="F1s,Precision,Recall,Accuracy,Mcc,pr_auc,auc",)
     parser.add_argument("--seed", default=2024, type=int)
     parser.add_argument("--num_folds", default=5, type=int)
+    parser.add_argument("--early_stop_patience", default=5, type=int)
 
     args = parser.parse_args()
     assert args.output_dir, "output_dir is required."
@@ -159,6 +208,10 @@ if __name__ == '__main__':
     labels = [item[1] for item in dataset_train.data]
     splitter = StratifiedKFold(n_splits=args.num_folds, shuffle=True, random_state=args.seed)
 
+    metric_names = [m.lower() for m in args.metrics]
+    kfold_rows = []
+    independent_rows = []
+
     for fold_id, (train_idx, val_idx) in enumerate(splitter.split(dataset_train.data, labels), start=1):
         print(f"\n========== Fold {fold_id}/{args.num_folds} ==========")
         fold_train = Subset(dataset_train, train_idx.tolist())
@@ -168,10 +221,28 @@ if __name__ == '__main__':
         fold_args.output_dir = os.path.join(args.output_dir, f"fold_{fold_id}")
 
         evaluator = build_evaluator(fold_args)
-        evaluator.run(
+        fold_result = evaluator.run(
             fold_args,
             train_data=fold_train,
             eval_data=fold_val,
             extra_eval_data=dataset_test,
             extra_eval_name="Independent_test_set",
         )
+
+        val_row = {"fold": fold_id}
+        if fold_result["best_val_metrics"] is not None:
+            val_row.update(fold_result["best_val_metrics"])
+        kfold_rows.append(val_row)
+
+        test_row = {"fold": fold_id}
+        if fold_result["independent_test_metrics"] is not None:
+            test_row.update(fold_result["independent_test_metrics"])
+            independent_rows.append(test_row)
+
+        print(f"[FoldSummary] fold={fold_id}, best_epoch={fold_result['best_epoch']}, best_pr_auc={val_row.get('pr_auc', 'NA')}")
+
+    print_metrics_table("K-fold best validation metrics (selected by pr_auc)", kfold_rows, metric_names)
+    print_mean_metrics("K-fold mean validation metrics", kfold_rows, metric_names)
+
+    print_metrics_table("Independent test metrics on each fold's best model", independent_rows, metric_names)
+    print_mean_metrics("Independent test mean metrics", independent_rows, metric_names)
