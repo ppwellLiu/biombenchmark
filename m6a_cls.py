@@ -1,4 +1,9 @@
 import argparse
+import copy
+import os
+
+from sklearn.model_selection import StratifiedKFold
+from torch.utils.data import Subset
 from transformers import AutoTokenizer
 from evaluator import m6a_evaluator
 from dataset import m6a_dataset
@@ -34,12 +39,89 @@ def str2list(v):
             "Str value seperated by ', ' expected.")
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(
-        description='')
+def build_evaluator(args):
+    if args.method == 'RNAFM':
+        args.replace_T = True
+        args.replace_U = False
+        args.max_seq_len = MAX_SEQ_LEN[args.method]
+        tokenizer = RNATokenizer(args.vocab_path)
+        return m6a_evaluator.RNAFMEvaluator(args, tokenizer=tokenizer)
 
-    parser.add_argument(
-        "--method", choices=available_methods, default='RNABERT')
+    if args.method == 'RNAMSM':
+        args.max_seq_len = MAX_SEQ_LEN["RNAMSM"]
+        args.replace_T = True
+        args.replace_U = False
+        tokenizer = RNATokenizer(args.vocab_path)
+        return m6a_evaluator.RNAMsmEvaluator(args, tokenizer=tokenizer)
+
+    if args.method == 'RNABERT' or args.method == 'RNABERT_RAW':
+        args.max_seq_len = MAX_SEQ_LEN["RNABERT"]
+        args.replace_T = True
+        args.replace_U = False
+        tokenizer = RNATokenizer(args.vocab_path)
+        return m6a_evaluator.RNABertEvaluator(args, tokenizer=tokenizer)
+
+    if (args.method == 'SpliceBERT') or (args.method == 'DNABERT'):
+        args.max_seq_len = MAX_SEQ_LEN[args.method]
+        args.replace_T = False
+        args.replace_U = True
+        tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+        return m6a_evaluator.DNABERTEvaluator(args, tokenizer=tokenizer)
+
+    if args.method == 'DNABERT2':
+        args.max_seq_len = MAX_SEQ_LEN["DNABERT2"]
+        args.replace_T = False
+        args.replace_U = True
+        tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+        return m6a_evaluator.DNABERT2Evaluator(args, tokenizer=tokenizer)
+
+    if args.method == 'RNAErnie':
+        args.max_seq_len = MAX_SEQ_LEN["RNAErnie"]
+        args.replace_T = True
+        args.replace_U = False
+        tokenizer = RNAErnieTokenizer.from_pretrained(args.model_path)
+        return m6a_evaluator.RNAErnieEvaluator(args, tokenizer=tokenizer)
+
+    if args.method == 'NucleotideTransformer':
+        args.max_seq_len = MAX_SEQ_LEN["NucleotideTransformer"]
+        args.replace_T = False
+        args.replace_U = True
+        tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+        return m6a_evaluator.NTEvaluator(args, tokenizer=tokenizer)
+
+    if args.method == 'GENA-LM-base' or args.method == 'GENA-LM-large':
+        args.max_seq_len = MAX_SEQ_LEN[args.method]
+        args.replace_T = False
+        args.replace_U = True
+        tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+        return m6a_evaluator.GENAEvaluator(args, tokenizer=tokenizer)
+
+    if args.method == 'DeepM6A':
+        args.replace_T = False
+        args.replace_U = True
+        args.max_seq_len = MAX_SEQ_LEN[args.method]
+        return m6a_evaluator.DeepM6ASeqEvaluator(args, tokenizer=None)
+
+    if args.method == 'bCNNMethylpred':
+        args.replace_T = False
+        args.replace_U = True
+        args.max_seq_len = MAX_SEQ_LEN[args.method]
+        return m6a_evaluator.bCNNEvaluator(args, tokenizer=None)
+
+    if args.method == 'UTRLM':
+        args.max_seq_len = MAX_SEQ_LEN["UTRLM"]
+        args.replace_T = False
+        args.replace_U = True
+        tokenizer = RNATokenizer(args.vocab_path)
+        return m6a_evaluator.UTRLMEvaluator(args, tokenizer=tokenizer)
+
+    raise ValueError(f"Unsupported method: {args.method}")
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='')
+
+    parser.add_argument("--method", choices=available_methods, default='RNABERT')
     parser.add_argument("--num_train_epochs", default=10, type=int)
     parser.add_argument("--batch_size", default=6, type=int)
     parser.add_argument("--num_workers", default=2, type=int)
@@ -58,134 +140,38 @@ if __name__ == '__main__':
     parser.add_argument('--metrics', type=str2list,
                         default="F1s,Precision,Recall,Accuracy,Mcc,pr_auc,auc",)
     parser.add_argument("--seed", default=2024, type=int)
+    parser.add_argument("--num_folds", default=5, type=int)
 
     args = parser.parse_args()
-
     assert args.output_dir, "output_dir is required."
 
-    ###
-    seed = args.seed
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    ###
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
 
-    # Special case
     if ('101bp' in args.dataset_train) and (MAX_SEQ_LEN[args.method] > 103):
         MAX_SEQ_LEN[args.method] = 103
-
     if ('101bp' in args.dataset_train) and (args.method == 'NucleotideTransformer'):
         MAX_SEQ_LEN[args.method] = 25
-    ##
 
-    dataset_train = m6a_dataset.M6ADataset(
-        fasta_dir=args.dataset_train)
-    dataset_test = m6a_dataset.M6ADataset(
-        fasta_dir=args.dataset_test)
+    dataset_train = m6a_dataset.M6ADataset(fasta_dir=args.dataset_train)
+    dataset_test = m6a_dataset.M6ADataset(fasta_dir=args.dataset_test)
 
-    if args.method == 'RNAFM':
-        args.replace_T = True
-        args.replace_U = False
-        args.max_seq_len = MAX_SEQ_LEN[args.method]
-        tokenizer = RNATokenizer(args.vocab_path)
+    labels = [item[1] for item in dataset_train.data]
+    splitter = StratifiedKFold(n_splits=args.num_folds, shuffle=True, random_state=args.seed)
 
-        ev = m6a_evaluator.RNAFMEvaluator(args, tokenizer=tokenizer)
-        ev.run(args, dataset_train, dataset_test)
+    for fold_id, (train_idx, val_idx) in enumerate(splitter.split(dataset_train.data, labels), start=1):
+        print(f"\n========== Fold {fold_id}/{args.num_folds} ==========")
+        fold_train = Subset(dataset_train, train_idx.tolist())
+        fold_val = Subset(dataset_train, val_idx.tolist())
 
-    if args.method == 'RNAMSM':
-        args.max_seq_len = MAX_SEQ_LEN["RNAMSM"]
-        args.replace_T = True
-        args.replace_U = False
-        tokenizer = RNATokenizer(args.vocab_path)
+        fold_args = copy.deepcopy(args)
+        fold_args.output_dir = os.path.join(args.output_dir, f"fold_{fold_id}")
 
-        ev = m6a_evaluator.RNAMsmEvaluator(args, tokenizer=tokenizer)
-        ev.run(args, dataset_train, dataset_test)
-
-    if args.method == 'RNABERT' or args.method == 'RNABERT_RAW':
-        args.max_seq_len = MAX_SEQ_LEN["RNABERT"]
-        args.replace_T = True
-        args.replace_U = False
-        tokenizer = RNATokenizer(args.vocab_path)
-
-        ev = m6a_evaluator.RNABertEvaluator(args, tokenizer=tokenizer)
-        ev.run(args, dataset_train, dataset_test)
-
-    if (args.method == 'SpliceBERT') or (args.method == 'DNABERT'):
-        args.max_seq_len = MAX_SEQ_LEN[args.method]
-        args.replace_T = False
-        args.replace_U = True
-        tokenizer = AutoTokenizer.from_pretrained(
-            args.model_path)
-
-        ev = m6a_evaluator.DNABERTEvaluator(args, tokenizer=tokenizer)
-        ev.run(args, dataset_train, dataset_test)
-
-    if args.method == 'DNABERT2':
-        args.max_seq_len = MAX_SEQ_LEN["DNABERT2"]
-        args.replace_T = False
-        args.replace_U = True
-        tokenizer = AutoTokenizer.from_pretrained(
-            args.model_path)
-
-        ev = m6a_evaluator.DNABERT2Evaluator(
-            args, tokenizer=tokenizer)
-        ev.run(args, dataset_train, dataset_test)
-
-    if args.method == 'RNAErnie':
-        args.max_seq_len = MAX_SEQ_LEN["RNAErnie"]
-        args.replace_T = True
-        args.replace_U = False
-
-        tokenizer = RNAErnieTokenizer.from_pretrained(
-            args.model_path,
+        evaluator = build_evaluator(fold_args)
+        evaluator.run(
+            fold_args,
+            train_data=fold_train,
+            eval_data=fold_val,
+            extra_eval_data=dataset_test,
+            extra_eval_name="Test_set",
         )
-        ev = m6a_evaluator.RNAErnieEvaluator(
-            args, tokenizer=tokenizer)  # load tokenizer from model
-        ev.run(args, dataset_train, dataset_test)
-
-    if args.method == 'NucleotideTransformer':
-        args.max_seq_len = MAX_SEQ_LEN["NucleotideTransformer"]
-        args.replace_T = False
-        args.replace_U = True
-        tokenizer = AutoTokenizer.from_pretrained(
-            args.model_path)
-
-        ev = m6a_evaluator.NTEvaluator(
-            args, tokenizer=tokenizer)
-        ev.run(args, dataset_train, dataset_test)
-
-    if args.method == 'GENA-LM-base' or args.method == 'GENA-LM-large':
-        args.max_seq_len = MAX_SEQ_LEN[args.method]
-        args.replace_T = False
-        args.replace_U = True
-        tokenizer = AutoTokenizer.from_pretrained(
-            args.model_path)
-
-        ev = m6a_evaluator.GENAEvaluator(
-            args, tokenizer=tokenizer)
-        ev.run(args, dataset_train, dataset_test)
-
-    if args.method == 'DeepM6A':
-        args.replace_T = False
-        args.replace_U = True
-        args.max_seq_len = MAX_SEQ_LEN[args.method]
-
-        ev = m6a_evaluator.DeepM6ASeqEvaluator(args, tokenizer=None)
-        ev.run(args, dataset_train, dataset_test)
-
-    if args.method == 'bCNNMethylpred':
-        args.replace_T = False
-        args.replace_U = True
-        args.max_seq_len = MAX_SEQ_LEN[args.method]
-
-        ev = m6a_evaluator.bCNNEvaluator(args, tokenizer=None)
-        ev.run(args, dataset_train, dataset_test)
-
-    if args.method == 'UTRLM':
-        args.max_seq_len = MAX_SEQ_LEN["UTRLM"]
-        args.replace_T = False
-        args.replace_U = True
-        tokenizer = RNATokenizer(args.vocab_path)
-
-        ev = m6a_evaluator.UTRLMEvaluator(
-            args, tokenizer=tokenizer)
-        ev.run(args, dataset_train, dataset_test)

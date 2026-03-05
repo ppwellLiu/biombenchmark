@@ -166,7 +166,7 @@ class M6APredEvaluator():
         )
         print("Trainable parameters: {}".format(trainable_params))
 
-    def run(self, args, train_data, eval_data):
+    def run(self, args, train_data, eval_data, extra_eval_data=None, extra_eval_name="Extra_set"):
         self.buildTrainer(args)
         args.device = self.device
         self.seq_cls_trainer = M6APredTrainer(
@@ -180,7 +180,9 @@ class M6APredEvaluator():
             compute_metrics=self._metric,
         )
         ## add extra evaluation
-        if args.extra_eval:
+        if extra_eval_data is not None:
+            self.seq_cls_trainer.extra_dataloader = self.seq_cls_trainer._get_dataloader(extra_eval_data)
+        elif args.extra_eval:
             extra_data = m6a_dataset.M6ADataset(fasta_dir=args.extra_eval)
             self.seq_cls_trainer.extra_dataloader = self.seq_cls_trainer._get_dataloader(extra_data)
         ##
@@ -190,8 +192,8 @@ class M6APredEvaluator():
             # record performance on train set to check overfitting
             self.seq_cls_trainer.eval(i_epoch, info="Train_set")
             self.seq_cls_trainer.eval(i_epoch)
-            if args.extra_eval:
-                self.seq_cls_trainer.eval(i_epoch, info="Extra_set")
+            if extra_eval_data is not None or args.extra_eval:
+                self.seq_cls_trainer.eval(i_epoch, info=extra_eval_name)
             if (i_epoch == 0) or ((i_epoch+1) % 5 == 0):
                 try:
                     self.seq_cls_trainer.save_model(
